@@ -201,10 +201,38 @@ public final class FlowCore {
 
     public static Analysis analyze(List<Result> desc){
         if(desc==null||desc.isEmpty())return null;
-        List<Result> all=chronoAsc(desc); if(all.size()>WINDOW)all=new ArrayList<>(all.subList(all.size()-WINDOW,all.size()));
-        Analysis a=decision(all,0,all.size());
-        a.count=all.size(); a.date=dayKey(all.get(all.size()-1).date); a.windowRange=rangeLabel(all,0,all.size()); a.suffix=suffixText(all,all.size(),8); a.backtest=backtest(all); return a;
+        // 앱 시작 직후/동기화 도중의 부분 데이터도 안전하게 처리한다.
+        // 유효 항목만 남기고 idx 중복 제거 후 시간순으로 정렬한다.
+        TreeMap<Long,Result> uniq=new TreeMap<>();
+        for(Result r:desc)if(validResult(r))uniq.put(r.idx,r);
+        if(uniq.isEmpty())return null;
+        List<Result> all=new ArrayList<>(uniq.values());
+        if(all.size()>WINDOW)all=new ArrayList<>(all.subList(all.size()-WINDOW,all.size()));
+
+        Analysis a;
+        if(all.size()<6)a=emptyAnalysis("표본 "+all.size()+"/6 · 안전 수집중");
+        else try{ a=decision(all,0,all.size()); }
+        catch(Throwable e){ a=emptyAnalysis("현재 분석 보호모드 · "+safeErr(e)); }
+        a.count=all.size();
+        Result last=all.get(all.size()-1);
+        try{a.date=dayKey(last.date);}catch(Throwable ignored){a.date=String.valueOf(last.date==null?"":last.date);}
+        try{a.windowRange=rangeLabel(all,0,all.size());}catch(Throwable ignored){a.windowRange="-";}
+        try{a.suffix=suffixText(all,all.size(),8);}catch(Throwable ignored){a.suffix="-";}
+        try{a.backtest=all.size()>=16?backtest(all):new Backtest();}catch(Throwable ignored){a.backtest=new Backtest();}
+        return a;
     }
+
+    private static Analysis emptyAnalysis(String reason){
+        Analysis a=new Analysis(); a.dims=new DimensionStat[3];
+        for(int dim=0;dim<3;dim++){
+            DimensionStat ds=new DimensionStat(); ds.name=DIM[dim]; ds.pick=0; ds.confidence=0.5; ds.qualified=false;
+            ds.markov=neutralEngine("Markov",reason); ds.hmm=neutralEngine("HMM",reason); ds.shape=neutralEngine("Shape AI",reason);
+            ds.main3=neutralShape(3); ds.confirm4=neutralShape(4); ds.assist5=neutralShape(5); ds.verdict=reason; a.dims[dim]=ds;
+        }
+        a.bestDim=-1;a.bestPick=0;a.bestConfidence=0.5;a.bestStrong=false;a.bestLabel="표본 수집중";return a;
+    }
+    private static EngineStat neutralEngine(String name,String detail){EngineStat e=new EngineStat();e.name=name;e.pick=0;e.pPlus=0.5;e.confidence=0.5;e.samples=0;e.detail=detail;return e;}
+    private static ShapeStat neutralShape(int len){ShapeStat s=new ShapeStat();s.length=len;s.pick=0;s.pPlus=0.5;s.confidence=0.5;s.shape="표본 수집중";s.tendency="중립 50.0%";return s;}
 
     private static Analysis decision(List<Result> all,int start,int end){
         Analysis a=new Analysis(); a.dims=new DimensionStat[3];
@@ -222,12 +250,16 @@ public final class FlowCore {
 
     private static DimensionStat dimensionDecision(List<Result> all,int start,int end,int dim){
         DimensionStat ds=new DimensionStat(); ds.name=DIM[dim];
-        ds.markov=markovStat(all,start,end,dim);
-        ds.hmm=hmmStat(all,start,end,dim);
-        ds.main3=shapeStat(all,start,end,3,dim);
-        ds.confirm4=shapeStat(all,start,end,4,dim);
-        ds.assist5=shapeStat(all,start,end,5,dim);
-        ds.shape=shapeEngine(ds.main3,ds.confirm4,ds.assist5,dim);
+        int n=Math.max(0,end-start);
+        // 부분 데이터에서는 엔진을 억지로 실행하지 않고 안전한 중립값으로 둔다.
+        if(n<2)ds.markov=neutralEngine("Markov","표본 "+n+"회 · 최소 2회 필요");
+        else try{ds.markov=markovStat(all,start,end,dim);}catch(Throwable e){ds.markov=neutralEngine("Markov","오류 격리 · "+safeErr(e));}
+        if(n<4)ds.hmm=neutralEngine("HMM","표본 "+n+"회 · 최소 4회 필요");
+        else try{ds.hmm=hmmStat(all,start,end,dim);}catch(Throwable e){ds.hmm=neutralEngine("HMM","오류 격리 · "+safeErr(e));}
+        try{ds.main3=shapeStat(all,start,end,3,dim);}catch(Throwable e){ds.main3=neutralShape(3);}
+        try{ds.confirm4=shapeStat(all,start,end,4,dim);}catch(Throwable e){ds.confirm4=neutralShape(4);}
+        try{ds.assist5=shapeStat(all,start,end,5,dim);}catch(Throwable e){ds.assist5=neutralShape(5);}
+        try{ds.shape=shapeEngine(ds.main3,ds.confirm4,ds.assist5,dim);}catch(Throwable e){ds.shape=neutralEngine("Shape AI","오류 격리 · "+safeErr(e));}
 
         EngineStat[] e={ds.markov,ds.hmm,ds.shape};
         int plus=0,minus=0; double p=0;
